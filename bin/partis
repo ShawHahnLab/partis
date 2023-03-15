@@ -18,6 +18,11 @@ if StrictVersion(scipy.__version__) < StrictVersion('0.17.0'):
 import colored_traceback.always
 import os
 import json
+import logging
+
+LOGGER = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
+
 partis_dir = os.path.dirname(os.path.realpath(__file__)).replace('/bin', '')
 if not os.path.exists(partis_dir):
     print 'WARNING current script dir %s doesn\'t exist, so python path may not be correctly set' % partis_dir
@@ -292,7 +297,11 @@ def default_parameter_dir(args):
 
 # ----------------------------------------------------------------------------------------
 def run_partitiondriver(args):
+    LOGGER.info("run_partitiondriver: start")
+    args_txt = "".join(["\n  {key}: {val}".format(key = key, val = vars(args)[key]) for key in vars(args)])
+    LOGGER.info("run_partitiondriver: args: %s", args_txt)
     if args.paired_loci:
+        LOGGER.info("run_partitiondriver: run_all_loci(args)")
         run_all_loci(args)
         return
 
@@ -309,14 +318,25 @@ def run_partitiondriver(args):
         if args.seed_unique_id is not None:  # if we're auto parameter caching for/before seed partitioning, we *don't* (yet) want to remove non-clonal sequences, since we need all the non-clonal sequences to get better parameters (maybe at some point we want to be able to count parameters just on this lineage, but for now let's keep it simple)
             raise Exception('if setting --seed-unique-id for \'partition\', you must first explicitly run \'cache-parameters\' in order to ensure that parameters are cached on all sequences, not just clonally related sequences.')
 
+    LOGGER.info("run_partitiondriver: read_inputs(args, actions=%s)", actions)
     input_info, reco_info, glfo, simglfo = read_inputs(args, actions)
+    LOGGER.info("run_partitiondriver: input_info: attrs for %d seqs", len(input_info))
+    LOGGER.info("run_partitiondriver: reco_info: %s", reco_info)
+    LOGGER.info(
+        "run_partitiondriver: glfo: germline info for %s (%d V, %d D, %d J)",
+        glfo["locus"], len(glfo["seqs"]["v"]), len(glfo["seqs"]["d"]), len(glfo["seqs"]["j"]))
+    LOGGER.info("run_partitiondriver: simglfo: %s", simglfo)
     if input_info is not None and len(input_info) < args.n_procs:
         print '  note: reducing N procs to the number of seqs %d --> %d' % (args.n_procs, len(input_info))
         args.n_procs = len(input_info)
+    LOGGER.info("run_partitiondriver: parter = PartitionDriver(args, glfo, input_info, simglfo, reco_info)")
     parter = PartitionDriver(args, glfo, input_info, simglfo, reco_info)
+    LOGGER.info("run_partitiondriver: parter.run(actions=%s)", actions)
     parter.run(actions)
     if not runs_on_existing_output(args.action):  # mostly wanted to avoid rewriting the persistent hmm cache file
+        LOGGER.info("run_partitiondriver: parter.clean()")
         parter.clean()
+    LOGGER.info("run_partitiondriver: end")
 
 # ----------------------------------------------------------------------------------------
 # it would be really nice if this didn't need to exist, it's complicated (but it's necessitated by needing to auto-cache parameters on the full un-split igh seqs when splitting loci)

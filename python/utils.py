@@ -32,6 +32,9 @@ except ImportError:
 import indelutils
 import clusterpath
 import treeutils
+import logging
+
+LOGGER = logging.getLogger(__name__)
 
 all_ptn_plot_cfg = ['shm-vs-size', 'cluster-bubble', 'mut-bubble', 'diversity', 'sizes', 'trees', 'subtree-purity', 'mds', 'laplacian-spectra', 'sfs']
 default_ptn_plot_cfg = ['shm-vs-size', 'diversity', 'cluster-bubble', 'sizes', 'trees']
@@ -4776,6 +4779,7 @@ def run_cmd(cmdfo, batch_system=None, batch_options=None, shell=False):
                             stdout=None if fout is None else open(fout, 'w'),
                             stderr=None if ferr is None else open(ferr, 'w'),
                             env=cmdfo.get('env'), shell=shell)
+    LOGGER.info("run_cmd: %s", cstr)
     return proc
 
 # ----------------------------------------------------------------------------------------
@@ -4802,6 +4806,7 @@ cmdfo_defaults = {  # None means by default it's absent
 #  - debug: can be None (stdout mostly gets ignored), 'print' (printed), 'write' (written to file 'log' in logdir), or 'write:<logfname>' (same, but use <logfname>)
 def run_cmds(cmdfos, shell=False, n_max_tries=None, clean_on_success=False, batch_system=None, batch_options=None, batch_config_fname=None,
              debug=None, ignore_stderr=False, sleep=True, n_max_procs=None, proc_limit_str=None, allow_failure=False):
+    LOGGER.info("run_cmds: start (cmsfos: %d dicts)", len(cmdfos))
     if len(cmdfos) == 0:
         raise Exception('zero length cmdfos')
     if n_max_tries is None:

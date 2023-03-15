@@ -15,6 +15,9 @@ import copy
 import multiprocessing
 import operator
 import traceback
+import logging
+
+LOGGER = logging.getLogger(__name__)
 
 import utils
 import glutils
@@ -121,10 +124,13 @@ class PartitionDriver(object):
 
     # ----------------------------------------------------------------------------------------
     def run(self, actions):
+        LOGGER.info("PartitionDriver.run: start")
         self.all_actions = actions
         for tmpaction in actions:
             self.current_action = tmpaction  # NOTE gets changed on the fly below, I think just in self.get_annotations_for_partitions() (which is kind of hackey, but I can't figure out a way to improve on it that wouldn't involve wasting a foolish amount of time rewriting things. Bottom line is that the control flow for different actions is really complicated, and that complexity is going to show up somewhere)
+            LOGGER.info("PartitionDriver.run: calling \"%s\"", tmpaction)
             self.action_fcns[tmpaction]()
+        LOGGER.info("PartitionDriver.run: end")
 
     # ----------------------------------------------------------------------------------------
     def clean(self):
@@ -149,6 +155,8 @@ class PartitionDriver(object):
             self.merge_files(infnames=[self.args.persistent_cachefname, self.hmm_cachefname], outfname=self.args.persistent_cachefname, dereplicate=True)
             lockfile.close()
             os.remove(lockfname)
+        if self.args.workdirtype == "manual":
+            return
         if os.path.exists(self.hmm_cachefname):
             os.remove(self.hmm_cachefname)
 
@@ -192,34 +200,43 @@ class PartitionDriver(object):
 
     # ----------------------------------------------------------------------------------------
     def run_waterer(self, count_parameters=False, write_parameters=False, write_cachefile=False, look_for_cachefile=False, require_cachefile=False, dbg_str=''):
+        LOGGER.info("PartitionDriver.run_waterer: start")
         print 'smith-waterman%s' % (('  (%s)' % dbg_str) if dbg_str != '' else '')
         sys.stdout.flush()
 
         self.vs_info = None  # should already be None, but we want to make sure (if --no-sw-vsearch is set we need it to be None, and if we just removed unlikely alleles we need to rerun vsearch with the likely alleles)
         if not self.args.no_sw_vsearch:
+            LOGGER.info("PartitionDriver.run_waterer: self.set_vsearch_info(get_annotations=True)")
             self.set_vsearch_info(get_annotations=True)
         if self.args.simultaneous_true_clonal_seqs:  # it might be better to just copy over the true indel info in this case? it depends what you're trying to test, and honestly really if you're using this option you just shouldn't be putting indels in your simulation to start with
+            LOGGER.info("PartitionDriver.run_waterer: simultaneous true clonal seqs")
             print '  note: not running msa indel stuff for --simultaneous-true-clonal-seqs, so any families with shm indels within cdr3 will be split up before running the hmm. To fix this you\'ll either need to run set_msa_info() (which is fine and easy, but slow, and requires deciding whether to make sure to run parameter caching with the arg, or else rerun smith waterman with the msa indels'
         if self.args.all_seqs_simultaneous and self.msa_vs_info is None:  # only run the first time we run sw
+            LOGGER.info("PartitionDriver.run_waterer: all seqs simultaneous and self.msa_vs_info is set")
+            LOGGER.info("PartitionDriver.run_waterer: self.set_msa_info(debug=%s)", self.args.debug)
             self.set_msa_info(debug=self.args.debug)
             look_for_cachefile, require_cachefile = False, False
             print '  note: ignoring any existing sw cache file to ensure we\'re getting msa indel info'  # the main use case for this is with 'annotate' or 'partition' on existing parameters that were run on the whole repertoire, so a) it shouldn't be a big deal to rerun and b) you probably don't want to run msa indel info when parameter caching. Also, it's not easy to figure out if msa indel info is in the sw cached file without first reading it
 
         pre_failed_queries = self.sw_info['failed-queries'] if self.sw_info is not None else None  # don't re-run on failed queries if this isn't the first sw run (i.e., if we're parameter caching)
+        LOGGER.info("PartitionDriver.run_waterer: Waterer(...)")
         waterer = Waterer(self.args, self.glfo, self.input_info, self.simglfo, self.reco_info,  # NOTE if we're reading a cache file, this glfo gets replaced with the glfo from the file
                           count_parameters=count_parameters,
                           parameter_out_dir=self.sw_param_dir if write_parameters else None,
                           plot_annotation_performance=self.args.plot_annotation_performance,
                           duplicates=self.duplicates, pre_failed_queries=pre_failed_queries, aligned_gl_seqs=self.aligned_gl_seqs, vs_info=self.vs_info, msa_vs_info=self.msa_vs_info)
 
+        LOGGER.info("PartitionDriver.run_waterer: cache_path = self.sw_cache_path(find_any=%s)", require_cachefile)
         cache_path = self.sw_cache_path(find_any=require_cachefile)
         cachefname = cache_path + ('.yaml' if self.args.sw_cachefname is None else utils.getsuffix(self.args.sw_cachefname))  # use yaml, unless csv was explicitly set on the command line
         if look_for_cachefile or require_cachefile:
             if os.path.exists(cache_path + '.csv'):  # ...but if there's already an old csv, use that
                 cachefname = cache_path + '.csv'
         else:  # i.e. if we're not explicitly told to look for it (and it exists) then it should be out of date
+            LOGGER.info("PartitionDriver.run_waterer: waterer.clean_cache(%s)", cache_path)
             waterer.clean_cache(cache_path)  # hm, should this be <cachefname> instead of <cache_path>? i mean they're the same, but still
         if (look_for_cachefile or require_cachefile) and os.path.exists(cachefname):
+            LOGGER.info("PartitionDriver.run_waterer: waterer.read_cachefile(%s)", cachefname)
             waterer.read_cachefile(cachefname)
         else:
             if require_cachefile:
@@ -249,6 +266,7 @@ class PartitionDriver(object):
         #     gene_counts = utils.get_gene_counts_from_annotations({q : self.sw_info[q] for q in self.sw_info['queries']})
         #     glutils.remove_extra_alleles_per_gene(self.glfo, self.args.n_max_alleles_per_gene, gene_counts)
         #     # glutils.write_glfo(self.sw_param_dir + '/' + glutils.glfo_dir, self.glfo)  # don't need to rewrite glfo above, since we haven't yet written parameters, but now we do/have
+        LOGGER.info("PartitionDriver.run_waterer: end")
 
     # ----------------------------------------------------------------------------------------
     def set_vsearch_info(self, get_annotations=False):  # NOTE setting match:mismatch to optimized values from sw (i.e. 5:-4) results in much worse shm indel performance, so we leave it at the vsearch defaults ('2:-4')
@@ -603,8 +621,12 @@ class PartitionDriver(object):
     # ----------------------------------------------------------------------------------------
     def partition(self):
         """ Partition sequences in <self.input_info> into clonally related lineages """
+        LOGGER.info("PartitionDriver.partition: start")
         print 'partitioning     (with %s)' % self.sub_param_dir
         if self.sw_info is None:
+            LOGGER.info(
+                "PartitionDriver.partition: self.run_waterer(look_for_cachefile=%s, write_cachefile=%s, count_parameters=%s)",
+                not self.args.write_sw_cachefile, self.args.write_sw_cachefile, False)
             self.run_waterer(look_for_cachefile=not self.args.write_sw_cachefile, write_cachefile=self.args.write_sw_cachefile, count_parameters=False)  # self.args.count_parameters)  # run smith-waterman
         if len(self.sw_info['queries']) == 0:
             if self.args.outfname is not None:
@@ -617,31 +639,47 @@ class PartitionDriver(object):
 
         # pre-cache hmm naive seq for each single query NOTE <self.current_action> is still 'partition' for this (so that we build the correct bcrham command line)
         if self.args.persistent_cachefname is None or not os.path.exists(self.hmm_cachefname):  # if the default (no persistent cache file), or if a not-yet-existing persistent cache file was specified
+            LOGGER.info("PartitionDriver.partition: no persistent cache file")
             print 'caching all %d naive sequences' % len(self.sw_info['queries'])  # this used to be a speed optimization, but now it's so we have better naive sequences for the pre-bcrham collapse
             if self.args.synthetic_distance_based_partition:
+                LOGGER.info("PartitionDriver.partition: self.write_fake_cache_File(...)")
                 self.write_fake_cache_file([[q] for q in self.sw_info['queries']])
             else:
+                LOGGER.info(
+                    "PartitionDriver.partition: self.run_hmm('viterbi', self.sub_param_dir=%s, precache_all_naive_seqs=True",
+                    self.sub_param_dir)
                 self.run_hmm('viterbi', self.sub_param_dir, precache_all_naive_seqs=True)  # , n_procs=self.auto_nprocs(len(self.sw_info['queries']))
 
         if self.args.simultaneous_true_clonal_seqs:
+            LOGGER.info("PartitionDriver.partition: case 1/5: simultaneous true clonal seqs")
             print '  --simultaneous-true-clonal-seqs: using true clusters instead of partitioning'
             true_partition = [[uid for uid in cluster if uid in self.sw_info] for cluster in utils.get_partition_from_reco_info(self.reco_info)]  # mostly just to remove duplicates, although I think there might be other reasons why a uid would be missing
             cpath = ClusterPath(seed_unique_id=self.args.seed_unique_id, partition=true_partition)
         elif self.args.all_seqs_simultaneous:
+            LOGGER.info("PartitionDriver.partition: case 2/5: all seqs simultaneous")
             print '  --all-seqs-simultaneous: using single cluster instead of partitioning'
             one_clust_ptn = [[u for u in self.sw_info['queries']]]
             cpath = ClusterPath(seed_unique_id=self.args.seed_unique_id, partition=one_clust_ptn)
         elif self.input_partition is not None:
+            LOGGER.info("PartitionDriver.partition: case 3/5: input partition supplied")
             print '  --input-partition-fname: using input cpath instead of running partitioning'
             cpath = self.input_cpath
         elif self.args.naive_vsearch: # or self.args.naive_swarm:
+            LOGGER.info("PartitionDriver.partition: case 4/5: naive vsearch")
             cpath = self.cluster_with_naive_vsearch_or_swarm(parameter_dir=self.sub_param_dir)
         else:
+            LOGGER.info("PartitionDriver.partition: case 5/5: clustering with bcrham")
+            LOGGER.info("PartitionDriver.partition: self.cluster_with_bcrham()")
             cpath = self.cluster_with_bcrham()
 
+        LOGGER.info("PartitionDriver.partition: self.get_annotations_for_partitions(cpath=%s)", cpath)
         self.get_annotations_for_partitions(cpath)
 
+        LOGGER.info(
+            "PartitionDriver.partition: self.check_partition(cpath.partitions[cpath.i_best]=%s)",
+            cpath.partitions[cpath.i_best])
         self.check_partition(cpath.partitions[cpath.i_best])
+        LOGGER.info("PartitionDriver.partition: end")
 
     # ----------------------------------------------------------------------------------------
     def split_seeded_clusters(self, old_cpath):  # NOTE similarity to clusterpath.remove_unseeded_clusters()
@@ -862,22 +900,33 @@ class PartitionDriver(object):
 
     # ----------------------------------------------------------------------------------------
     def cluster_with_bcrham(self):
+        LOGGER.info("PartitionDriver.cluster_with_bcrham: start")
         tmpstart = time.time()
         self.set_force_args = False  # annoying shenanigans to make sure that if both --seed-unique-id and either of --n-final-clusters or --min-largest-cluster-size are set, that the "force" args are set in bcrham *before* we remove unseeded seqs
         n_procs = self.args.n_procs
+        LOGGER.info("PartitionDriver.cluster_with_bcrham: cpath, intitial_nseqs = self.init_cpath(n_procs=%s)", n_procs)
         cpath, initial_nseqs = self.init_cpath(n_procs)
         self.n_proc_list = []
         self.istep = 0
         start = time.time()
         while n_procs > 0:
+            # bmx = "best, minus x"
             if n_procs > len(cpath.bmx()):
                 print '  reducing n procs to number of clusters: %d --> %d' % (n_procs, len(cpath.bmx()))
                 n_procs = len(cpath.bmx())
             print '%d clusters with %d proc%s' % (len(cpath.bmx()), n_procs, utils.plural(n_procs))  # NOTE that a.t.m. i_best and i_best_minus_x are usually the same, since we're usually not calculating log probs of partitions (well, we're trying to avoid calculating any extra log probs, which means we usually don't know the log prob of the entire partition)
             cpath, _, _ = self.run_hmm('forward', self.sub_param_dir, n_procs=n_procs, partition=cpath.bmx(), shuffle_input=True)  # note that this annihilates the old <cpath>, which is a memory optimization (but we write all of them to the cpath progress dir)
+            LOGGER.info(
+                "PartitionDriver.cluster_with_bcrham: self.n_proc_list.append(n_procs=%s)", n_procs)
             self.n_proc_list.append(n_procs)
             if self.are_we_finished_clustering(n_procs, cpath):
+                LOGGER.info(
+                    "PartitionDriver.cluster_with_bcrham: self.are_we_finished_clustering(n_procs=%s, cpath=%s) is True",
+                    n_procs, cpath)
                 break
+            LOGGER.info(
+                "PartitionDriver.cluster_with_bcrham: n_procs, cpath = self.prepare_next_iteration(cpath=%s, initial_nseqs=%s)",
+                cpath, initial_nseqs)
             n_procs, cpath = self.prepare_next_iteration(cpath, initial_nseqs)
             self.istep += 1
 
@@ -885,9 +934,11 @@ class PartitionDriver(object):
             print '   --max-cluster-size (partitiondriver): merging shared clusters'
             self.merge_shared_clusters(cpath)
 
+        LOGGER.info("PartitionDriver.cluster_with_bcrham: cpath = self.merge_cpath_from_previous_step(cpath=%s)", cpath)
         cpath = self.merge_cpaths_from_previous_steps(cpath)
 
         print '      loop time: %.1f' % (time.time()-start)
+        LOGGER.info("PartitionDriver.cluster_with_bcrham: end")
         return cpath
 
     # ----------------------------------------------------------------------------------------
@@ -1219,6 +1270,7 @@ class PartitionDriver(object):
 
     # ----------------------------------------------------------------------------------------
     def execute(self, cmd_str, n_procs):
+        LOGGER.info("Partition.Driver.execute: start (cmd_str: %s, n_procs: %s)", cmd_str, n_procs)
         # ----------------------------------------------------------------------------------------
         def get_outfname(iproc):
             return self.hmm_outfname.replace(self.args.workdir, self.subworkdir(iproc, n_procs))
@@ -1240,11 +1292,13 @@ class PartitionDriver(object):
                    'outfname' : get_outfname(iproc),
                    'dbgfo' : self.bcrham_proc_info[iproc]}
                   for iproc in range(n_procs)]
+        LOGGER.info("PartitionDriver.execute: utils.run_cmds(cmdfos=%s, ...)", cmdfos)
         utils.run_cmds(cmdfos, batch_system=self.args.batch_system, batch_options=self.args.batch_options, batch_config_fname=self.args.batch_config_fname, debug='print' if self.args.debug else None)
         self.print_partition_dbgfo()
 
         self.check_wait_times(time.time()-start)
         sys.stdout.flush()
+        LOGGER.info("Partition.Driver.execute: end")
 
     # ----------------------------------------------------------------------------------------
     def subcl_split(self, n_seqs):  # return true if we want to split cluster of size <n_seqs> into subclusters for purposes of annotation accuracy
@@ -1451,23 +1505,39 @@ class PartitionDriver(object):
         Run bcrham, possibly with many processes, and parse and interpret the output.
         NOTE the local <n_procs>, which overrides the one from <self.args>
         """
+        LOGGER.info(
+            "PartitionDriver.run_hmm: start\n  algorithm: %s\n  parameter_in_dir: %s"
+            "\n  parameter_out_dir: %s\n  count_parameters: %s\n  n_procs: %s"
+            "\n  precache_all_naive_seqs: %s\n  partition: %s\n  shuffle_input: %s"
+            "\n  is_subcluster_recursed: %s\n  dont_print_annotations: %s",
+            algorithm, parameter_in_dir, parameter_out_dir, count_parameters, n_procs,
+            precache_all_naive_seqs, partition, shuffle_input,
+            is_subcluster_recursed, dont_print_annotations)
         start = time.time()
         if len(self.sw_info['queries']) == 0:
             print '  %s no input queries for hmm' % utils.color('red', 'warning')
             return
 
+        LOGGER.info(
+            "PartitionDriver.run_hmm: nsets = self.get_nsets(algorithm=%s, partition=%s)",
+            algorithm, partition)
         nsets = self.get_nsets(algorithm, partition)
+        LOGGER.info("PartitionDriver.run_hmm: nsets: %s", nsets)
         if n_procs is None:
             n_procs = self.args.n_procs
             if len(nsets) < n_procs:
                 # print '  note: reducing N procs to the number of nsets %d --> %d' % (n_procs, len(nsets))
                 n_procs = len(nsets)
+        LOGGER.info("PartitionDriver.run_hmm: nprocs: %d", n_procs)
 
         if self.args.subcluster_annotation_size is not None and algorithm == 'viterbi' and not is_subcluster_recursed and not precache_all_naive_seqs and any(self.subcl_split(len(c)) for c in nsets):
             assert not shuffle_input
+            LOGGER.info("PartitionDriver.run_hmm: self.run_subcluster_annotate(...)")
             return self.run_subcluster_annotate(nsets, parameter_in_dir, count_parameters=count_parameters, parameter_out_dir=parameter_out_dir, dont_print_annotations=dont_print_annotations, debug=self.args.debug)
 
+        LOGGER.info("PartitionDriver.run_hmm: self.write_to_single_input_file(...)")
         self.write_to_single_input_file(self.hmm_infname, nsets, parameter_in_dir, shuffle_input=shuffle_input)  # single file gets split up later if we've got more than one process
+        LOGGER.info("PartitionDriver.run_hmm: glutils.write_glfo(...)")
         glutils.write_glfo(self.my_gldir, self.glfo)
         if time.time() - start > 0.1:
             print '        hmm prep time: %.1f' % (time.time() - start)
@@ -1475,16 +1545,26 @@ class PartitionDriver(object):
         cmd_str = self.get_hmm_cmd_str(algorithm, self.hmm_infname, self.hmm_outfname, parameter_dir=parameter_in_dir, precache_all_naive_seqs=precache_all_naive_seqs, n_procs=n_procs)
 
         if n_procs > 1:
+            LOGGER.info("PartitionDriver.run_hmm: n_procs > 1 --> split_input(%s, %s)", n_procs, self.hmm_infname)
             self.split_input(n_procs, self.hmm_infname)
 
         exec_start = time.time()
         self.execute(cmd_str, n_procs)
         exec_time = time.time() - exec_start
 
-        glutils.remove_glfo_files(self.my_gldir, self.args.locus)
+        if self.args.workdirtype == "automatic":
+            LOGGER.info(
+                "PartitionDriver.run_hmm: glutils.remove_glfo_files(self.mygldir=%s, self.args.locus=%s)",
+                self.my_gldir, self.args.locus)
+            glutils.remove_glfo_files(self.my_gldir, self.args.locus)
 
         cpath, annotations, hmm_failures = None, None, None
         if self.current_action == 'partition' or n_procs > 1:
+            LOGGER.info("PartitionDriver.run_hmm: current_action == 'partition? %s", self.current_action == 'partition')
+            LOGGER.info("PartitionDriver.run_hmm: n_procs > 1? %s", n_procs > 1)
+            LOGGER.info(
+                "PartitionDriver.run_hmm: merge_all_hmm_outputs(n_procs=%s, precache_all_naive_seqs=%s)",
+                n_procs, precache_all_naive_seqs)
             cpath = self.merge_all_hmm_outputs(n_procs, precache_all_naive_seqs)
             if cpath is not None:
                 cpath.write(self.get_cpath_progress_fname(self.istep), self.args.is_data, reco_info=self.reco_info, true_partition=utils.get_partition_from_reco_info(self.reco_info) if not self.args.is_data else None)
@@ -1492,7 +1572,7 @@ class PartitionDriver(object):
         if algorithm == 'viterbi' and not precache_all_naive_seqs:
             annotations, hmm_failures = self.read_annotation_output(self.hmm_outfname, count_parameters=count_parameters, parameter_out_dir=parameter_out_dir, print_annotations=self.args.debug and not dont_print_annotations, is_subcluster_recursed=is_subcluster_recursed)
 
-        if os.path.exists(self.hmm_infname):
+        if os.path.exists(self.hmm_infname) and self.args.workdirtype == "automatic":
             os.remove(self.hmm_infname)
 
         step_time = time.time() - start
@@ -1501,6 +1581,7 @@ class PartitionDriver(object):
         print '      hmm step time: %.1f' % step_time
         self.timing_info.append({'exec' : exec_time, 'total' : step_time})  # NOTE in general, includes pre-cache step
 
+        LOGGER.info("PartitionDriver.run_hmm: end")
         return cpath, annotations, hmm_failures
 
     # ----------------------------------------------------------------------------------------
@@ -1787,6 +1868,9 @@ class PartitionDriver(object):
         # else:
         #     print '  outfname d.n.e.'
 
+        LOGGER.info(
+            "PartitionDriver.merge_files: start (infnames: %s, outfname: %s, dereplicate: %s)",
+            infnames, outfname, dereplicate)
         header = ''
         outfile = None
         one_real_file = False
@@ -1829,15 +1913,20 @@ class PartitionDriver(object):
             check_call(['mv', tmpfname, outfname])
 
         for infname in infnames:
-            if infname != outfname:
+            if infname != outfname and self.args.workdirtype == "automatic":
                 os.remove(infname)
 
     # ----------------------------------------------------------------------------------------
     def merge_all_hmm_outputs(self, n_procs, precache_all_naive_seqs):
         """ Merge any/all output files from subsidiary bcrham processes """
+        LOGGER.info(
+            "PartitionDriver.merge_all_hmm_outputs: start (n_procs: %s, precache_all_naive_seqs: %s)",
+            n_procs, precache_all_naive_seqs)
         cpath = None  # it would be nice to figure out a cleaner way to do this
         if self.current_action == 'partition':  # merge partitions from several files
             if n_procs > 1:
+                LOGGER.info("PartitionDriver.merge_all_hmm_outputs: current_action == partition and n_procs > 1")
+                LOGGER.info("PartitionDriver.merge_all_hmm_outputs: self.merge_subprocess_files(..., include_outfile=True)")
                 self.merge_subprocess_files(self.hmm_cachefname, n_procs, include_outfile=True)  # sub cache files only have new info
 
             if not precache_all_naive_seqs:
@@ -1846,19 +1935,22 @@ class PartitionDriver(object):
                 else:
                     infnames = [self.subworkdir(iproc, n_procs) + '/' + os.path.basename(self.hmm_outfname) for iproc in range(n_procs)]
                 glomerer = Glomerator(self.reco_info, seed_unique_id=self.args.seed_unique_id)
+                LOGGER.info("PartitionDriver.merge_all_hmm_outputs: cpath = glomerer.read_cached_agglomeration(...)")
                 cpath = glomerer.read_cached_agglomeration(infnames, debug=self.args.debug)  #, outfname=self.hmm_outfname)
         else:
+            LOGGER.info("PartitionDriver.merge_all_hmm_outputs: self.merge_subprocess_files(...)")
             self.merge_subprocess_files(self.hmm_outfname, n_procs)
 
-        if n_procs == 1:
-            os.remove(self.hmm_outfname)
-        else:
-            for iproc in range(n_procs):
-                subworkdir = self.subworkdir(iproc, n_procs)
-                os.remove(subworkdir + '/' + os.path.basename(self.hmm_infname))
-                if os.path.exists(subworkdir + '/' + os.path.basename(self.hmm_outfname)):
-                    os.remove(subworkdir + '/' + os.path.basename(self.hmm_outfname))
-                os.rmdir(subworkdir)
+        if self.args.workdirtype == "automatic":
+            if n_procs == 1:
+                os.remove(self.hmm_outfname)
+            else:
+                for iproc in range(n_procs):
+                    subworkdir = self.subworkdir(iproc, n_procs)
+                    os.remove(subworkdir + '/' + os.path.basename(self.hmm_infname))
+                    if os.path.exists(subworkdir + '/' + os.path.basename(self.hmm_outfname)):
+                        os.remove(subworkdir + '/' + os.path.basename(self.hmm_outfname))
+                    os.rmdir(subworkdir)
 
         return cpath
 
@@ -2018,8 +2110,11 @@ class PartitionDriver(object):
     # ----------------------------------------------------------------------------------------
     # @utils.timeprinter
     def get_nsets(self, algorithm, partition):
+        LOGGER.info(
+            "PartitionDriver.get_nsets: start (algorithm: %s, partition: %s)", algorithm, partition)
 
         if partition is not None:
+            LOGGER.info("PartitionDriver.get_nsets: partition is not None...")
             if len(partition) < 10000 and any(partition.count(c) > 1 for c in partition):  # there's nothing really *wrong* with having duplicates, but a) it's wasteful and b) it typically means something is wrong/nonsensical in the code that decided to send you the same task twice (first clause is just cause this is slow on super large samples, and this whole check is only really likely to trigger if we're debugging new code)
                 for tcount, tclust in set([(partition.count(c), ':'.join(c)) for c in partition if partition.count(c) > 1]):
                     print '  %s cluster occurs %d times in the <nsets> we\'re sending to bcrham: %s' % (utils.color('yellow', 'warning'), tcount, tclust)
@@ -2027,22 +2122,28 @@ class PartitionDriver(object):
             if self.input_partition is not None or self.args.simultaneous_true_clonal_seqs or self.args.annotation_clustering:  # this is hackey, but we absolutely cannot have different cdr3 lengths in the same cluster, and these are two cases where it can happen (in very rare cases, usually on really crappy sequences)
                 nsets = utils.split_clusters_by_cdr3(nsets, self.sw_info, warn=True)
         else:
+            LOGGER.info("PartitionDriver.get_nsets: partition is None...")
             qlist = self.sw_info['queries']  # shorthand
 
             if self.args.simultaneous_true_clonal_seqs:  # NOTE this arg can now also be set when partitioning, but it's dealt with elsewhere
+                LOGGER.info("PartitionDriver.get_nsets: case 1/4: simultaneous true clonal seqs; grouping by true partition")
                 print '  --simultaneous-true-clonal-seqs: grouping seqs according to true partition'
                 nsets = utils.get_partition_from_reco_info(self.reco_info, ids=qlist)
                 nsets = utils.split_clusters_by_cdr3(nsets, self.sw_info, warn=True)  # arg, have to split some clusters apart by cdr3, for rare cases where we call an shm indel in j within the cdr3
             elif self.args.all_seqs_simultaneous:  # everybody together
+                LOGGER.info("PartitionDriver.get_nsets: case 2/4: all seqs simultaneous")
                 nsets = [qlist]
                 nsets = utils.split_clusters_by_cdr3(nsets, self.sw_info, warn=True)  # ok, this shouldn't happen any more (with msa_vs_info)
             elif self.args.n_simultaneous_seqs is not None:  # set number of simultaneous seqs
+                LOGGER.info("PartitionDriver.get_nsets: case 3/4: n simultaneous seqs is set")
                 nlen = self.args.n_simultaneous_seqs  # shorthand
                 # nsets = [qlist[iq : min(iq + nlen, len(qlist))] for iq in range(0, len(qlist), nlen)]  # this way works fine, but it's hard to get right 'cause it's hard to understand 
                 nsets = [list(group) for _, group in itertools.groupby(qlist, key=lambda q: qlist.index(q) / nlen)]  # integer division
             else:  # plain ol' singletons
+                LOGGER.info("PartitionDriver.get_nsets: case 4/4: just set nsets to singletons")
                 nsets = [[q] for q in qlist]
 
+        LOGGER.info("PartitionDriver.get_nsets: end")
         return nsets
 
     # ----------------------------------------------------------------------------------------
@@ -2310,7 +2411,8 @@ class PartitionDriver(object):
                 counts['n_events_processed'] += 1
                 counts['n_seqs_processed'] += len(uids)
 
-        os.remove(annotation_fname)
+        if self.args.workdirtype == "automatic":
+            os.remove(annotation_fname)
 
         print '        read %d hmm output lines with %d sequences in %d events  (%d failures)' % (counts['n_lines_read'], counts['n_seqs_processed'], counts['n_events_processed'], len(hmm_failures))
         if counts['n_invalid_events'] > 0:

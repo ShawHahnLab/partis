@@ -292,8 +292,10 @@ def process(args):
         args.mutation_multiplier = 0.
 
     if args.workdir is None:  # set default here so we know whether it was set by hand or not
+        args.workdirtype = "automatic"
         args.workdir = get_workdir(args.batch_system)
     else:
+        args.workdirtype = "manual"
         args.workdir = args.workdir.rstrip('/')
     if os.path.exists(args.workdir):
         raise Exception('workdir %s already exists' % args.workdir)

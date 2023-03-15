@@ -11,6 +11,9 @@ from collections import OrderedDict
 import csv
 import numpy
 import traceback
+import logging
+
+LOGGER = logging.getLogger(__name__)
 
 import utils
 import glutils
@@ -188,6 +191,7 @@ class Waterer(object):
 
     # ----------------------------------------------------------------------------------------
     def finalize(self, cachefname=None, just_read_cachefile=False, ignore_seed_unique_id=False, quiet=False):
+        LOGGER.info("Waterer.finalize: start")
         if self.debug:
             print '%s' % utils.color('green', 'finalizing')
 
@@ -276,8 +280,13 @@ class Waterer(object):
             if self.parameter_out_dir is not None and not self.args.dont_write_parameters:
                 pcounter.write(self.parameter_out_dir)
 
-        glutils.remove_glfo_files(self.my_gldir, self.args.locus)
+        if self.args.workdirtype == "automatic":
+            LOGGER.info(
+                "Waterer.finalize: glutils.remove_glfo_files(self.my_gldir=%s, self.args.locus=%s)",
+                self.my_gldir, self.args.locus)
+            glutils.remove_glfo_files(self.my_gldir, self.args.locus)
         sys.stdout.flush()
+        LOGGER.info("Waterer.finalize: end")
 
     # ----------------------------------------------------------------------------------------
     def add_vs_indels(self):
